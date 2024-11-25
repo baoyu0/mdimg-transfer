@@ -4,232 +4,136 @@ API 路由模块。
 """
 
 import os
+import uuid
 import logging
-import aiofiles
-from quart import Blueprint, request, jsonify, current_app, send_file
-from ..core.markdown_processor import MarkdownProcessor
-from ..core.image_downloader import ImageDownloader
-from ..core.r2_uploader import R2Uploader
-from pathlib import Path
-from urllib.parse import urlparse
+import asyncio
+from quart import Blueprint, request, jsonify, websocket, current_app, send_from_directory
 from werkzeug.utils import secure_filename
-from ..config import config
+from ..services.file_processor import FileProcessor
+from ..services.url_processor import UrlProcessor
+from ..services.progress import ProgressManager
+from ..config import Config
 
 logger = logging.getLogger(__name__)
 
 bp = Blueprint('api', __name__, url_prefix='/api')
+progress_manager = ProgressManager()
 
-# 创建必要的实例
-downloader = ImageDownloader()
-r2_uploader = R2Uploader()
-markdown_processor = MarkdownProcessor(downloader=downloader, r2_uploader=r2_uploader)
+@bp.websocket('/ws/progress/<task_id>')
+async def progress_ws(task_id):
+    """WebSocket endpoint for progress updates"""
+    try:
+        while True:
+            progress = progress_manager.get_progress(task_id)
+            if progress:
+                await websocket.send_json(progress)
+                if progress.get('status') in ['completed', 'error']:
+                    break
+            await asyncio.sleep(0.1)
+    except Exception as e:
+        logger.error(f"WebSocket error: {e}")
 
 @bp.route('/process', methods=['POST'])
 async def process_markdown():
-    """
-    处理 Markdown 文件。
-    包括：解析图片链接、下载图片、处理图片、上传到新位置、更新文档。
-    """
+    """处理 Markdown 文件"""
     try:
         files = await request.files
         if 'file' not in files:
-            return jsonify({
-                "error": "No file provided"
-            }), 400
+            return jsonify({"error": "No file provided"}), 400
         
         file = files['file']
         if not file.filename:
-            return jsonify({
-                "error": "No file selected"
-            }), 400
+            return jsonify({"error": "No file selected"}), 400
             
-        # 确保文件名安全
-        filename = secure_filename(file.filename)
-        
-        # 保存上传的文件
-        temp_path = os.path.join(config.UPLOAD_FOLDER, filename)
-        os.makedirs(config.UPLOAD_FOLDER, exist_ok=True)
-        await file.save(temp_path)
-        
-        # 读取文件内容
-        async with aiofiles.open(temp_path, mode='r', encoding='utf-8') as f:
-            content = await f.read()
+        if not file.filename.lower().endswith('.md'):
+            return jsonify({"error": "Invalid file type. Please upload a Markdown file."}), 400
             
-        # 删除临时文件
-        os.remove(temp_path)
+        task_id = progress_manager.create_task()
         
-        if not content:
-            return jsonify({
-                "error": "Empty file"
-            }), 400
+        def progress_update(msg):
+            progress_manager.update_progress(
+                task_id, 
+                msg.get('message', ''), 
+                msg.get('progress', 0), 
+                msg.get('details', {})
+            )
         
-        logger.info("收到处理请求，Markdown文本长度: %s", len(content))
+        # 处理文件
+        processor = FileProcessor(current_app.config)
+        result = await processor.process_markdown_file(
+            file=file,
+            task_id=task_id,
+            progress_callback=progress_update
+        )
         
-        # 处理 Markdown 文件
-        logger.info("开始处理Markdown文本...")
-        new_content, download_results = await markdown_processor.process_content(content)
-        
-        # 统计成功下载的图片数量
-        successful_downloads = sum(1 for result in download_results.values() if isinstance(result, tuple) and result[0])
-        
-        logger.info("处理完成！处理了 %s 个链接，成功下载 %s 个图片", len(markdown_processor.image_links), successful_downloads)
-        
-        if download_results:
-            logger.info("下载失败的图片:")
-            for url, result in download_results.items():
-                if not isinstance(result, tuple) or not result[0]:
-                    logger.info("- %s", url)
-                    
-        # Check for errors in markdown processor
-        if hasattr(markdown_processor, 'errors') and markdown_processor.errors:
-            logger.info("处理过程中的错误:")
-            for error in markdown_processor.errors:
-                logger.info("- %s", error)
-        
-        # 保存处理后的文件
-        processed_filename = f"processed_{filename}"
-        processed_path = os.path.join(config.PROCESSED_FOLDER, processed_filename)
-        
-        # 确保目录存在
-        os.makedirs(config.PROCESSED_FOLDER, exist_ok=True)
-        
-        # 写入处理后的内容
-        async with aiofiles.open(processed_path, mode='w', encoding='utf-8') as f:
-            await f.write(new_content)
-        
+        if result.get('error'):
+            progress_manager.set_error(task_id, result['error'])
+            return jsonify({'error': result['error']}), 400
+            
+        progress_manager.set_completed(task_id)
         return jsonify({
-            "message": "File processed successfully",
-            "original_filename": filename,
-            "processed_filename": processed_filename,
-            "total_images": len(markdown_processor.image_links),
-            "successful_downloads": successful_downloads,
-            "download_url": f"/api/download/{processed_filename}"
+            'task_id': task_id,
+            'download_url': result['download_url'],
+            'total_images': result['total_images'],
+            'successful_downloads': result['successful_downloads']
         })
-        
+
     except Exception as e:
-        logger.error("处理过程中发生错误: %s", str(e), exc_info=True)
+        logger.error(f"Error processing markdown: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@bp.route('/process-url', methods=['POST'])
+async def process_url():
+    """处理URL请求"""
+    try:
+        data = await request.get_json()
+        if not data or 'url' not in data:
+            return jsonify({"error": "No URL provided"}), 400
+
+        url = data['url']
+        task_id = progress_manager.create_task()
+        
+        def progress_update(msg):
+            progress_manager.update_progress(
+                task_id, 
+                msg.get('message', ''), 
+                msg.get('progress', 0), 
+                msg.get('details', {})
+            )
+        
+        # 处理URL
+        processor = UrlProcessor(current_app.config)
+        result = await processor.process_url(
+            url=url,
+            task_id=task_id,
+            progress_callback=progress_update
+        )
+        
+        if result.get('error'):
+            progress_manager.set_error(task_id, result['error'])
+            return jsonify({'error': result['error']}), 400
+            
+        progress_manager.set_completed(task_id)
         return jsonify({
-            "error": "Internal server error",
-            "message": str(e)
-        }), 500
+            'task_id': task_id,
+            'download_url': result['download_url'],
+            'total_images': result['total_images'],
+            'successful_downloads': result['successful_downloads']
+        })
+
+    except Exception as e:
+        logger.error(f"Error processing URL: {e}")
+        return jsonify({"error": str(e)}), 500
 
 @bp.route('/download/<filename>')
 async def download_file(filename):
     """下载处理后的文件"""
     try:
-        file_path = os.path.join(config.PROCESSED_FOLDER, filename)
-        if not os.path.exists(file_path):
-            return jsonify({
-                "error": "File not found"
-            }), 404
-        
-        # 读取文件内容
-        async with aiofiles.open(file_path, 'rb') as f:
-            content = await f.read()
-            
-        # 设置响应头
-        headers = {
-            'Content-Type': 'text/markdown',
-            'Content-Disposition': f'attachment; filename="{filename}"',
-            'Cache-Control': 'no-cache, no-store, must-revalidate',
-            'Pragma': 'no-cache',
-            'Expires': '0'
-        }
-        
-        # 返回文件内容
-        return content, 200, headers
-        
+        return await send_from_directory(
+            current_app.config['PROCESSED_DIR'],
+            filename,
+            as_attachment=True
+        )
     except Exception as e:
-        logger.error("Error downloading file: %s", str(e), exc_info=True)
-        return jsonify({
-            "error": "Internal server error",
-            "message": str(e)
-        }), 500
-
-@bp.route('/images/<filename>')
-async def serve_image(filename):
-    """提供图片文件"""
-    try:
-        file_path = os.path.join(config.IMAGE_FOLDER, filename)
-        if not os.path.exists(file_path):
-            return jsonify({
-                "error": "Image not found"
-            }), 404
-        
-        return await send_file(file_path)
-    except Exception as e:
-        logger.error("Error serving image: %s", str(e), exc_info=True)
-        return jsonify({
-            "error": "Internal server error",
-            "message": str(e)
-        }), 500
-
-@bp.route('/process_url', methods=['POST'])
-async def process_url():
-    """
-    处理网页URL。
-    提取网页内容，转换为Markdown格式，并处理其中的图片。
-    """
-    try:
-        data = await request.get_json()
-        if not data or 'url' not in data:
-            return jsonify({
-                "error": "No URL provided"
-            }), 400
-
-        url = data['url']
-        if not url:
-            return jsonify({
-                "error": "Empty URL"
-            }), 400
-
-        try:
-            parsed_url = urlparse(url)
-            if not all([parsed_url.scheme, parsed_url.netloc]):
-                return jsonify({
-                    "error": "Invalid URL format"
-                }), 400
-        except Exception:
-            return jsonify({
-                "error": "Invalid URL"
-            }), 400
-
-        # 生成一个唯一的文件名
-        filename = f"url_{secure_filename(url)}.md"
-        temp_path = os.path.join(config.UPLOAD_FOLDER, filename)
-        
-        try:
-            # 下载并处理URL内容
-            content = await downloader.download_url_content(url)
-            if not content:
-                return jsonify({
-                    "error": "Failed to fetch URL content"
-                }), 400
-
-            # 保存为临时文件
-            async with aiofiles.open(temp_path, 'w', encoding='utf-8') as f:
-                await f.write(content)
-
-            # 处理文件中的图片
-            processed_path = await markdown_processor.process_file(temp_path)
-            if not processed_path:
-                return jsonify({
-                    "error": "Failed to process content"
-                }), 500
-
-            return jsonify({
-                "success": True,
-                "download_id": os.path.basename(processed_path)
-            })
-
-        except Exception as e:
-            logger.error(f"Error processing URL {url}: {str(e)}")
-            return jsonify({
-                "error": f"Failed to process URL: {str(e)}"
-            }), 500
-
-    except Exception as e:
-        logger.error(f"Error in process_url: {str(e)}")
-        return jsonify({
-            "error": "Internal server error"
-        }), 500
+        logger.error(f"Error downloading file: {e}")
+        return jsonify({"error": "File not found"}), 404

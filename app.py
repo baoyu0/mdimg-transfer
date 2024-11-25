@@ -4,9 +4,9 @@
 import logging
 import os
 from pathlib import Path
-from quart import Quart, render_template
+from quart import Quart, render_template, send_from_directory
 from mdimg_transfer.config import config
-from mdimg_transfer.routes import api
+from mdimg_transfer.routes.api import api
 from mdimg_transfer.core.markdown_processor import MarkdownProcessor
 from mdimg_transfer.core.image_downloader import ImageDownloader
 from mdimg_transfer.core.r2_uploader import R2Uploader
@@ -58,12 +58,20 @@ def create_app():
     
     logger.debug("正在注册蓝图...")
     # 注册蓝图
-    app.register_blueprint(api.create_blueprint(markdown_processor, html_converter))
+    app.register_blueprint(api.create_blueprint(markdown_processor, html_converter), url_prefix='/api')
     
     @app.route('/')
     async def index():
         """主页"""
         return await render_template('index.html')
     
+    @app.route('/download/<path:filename>')
+    async def download_file(filename):
+        return await send_from_directory('processed', filename)
+    
     logger.info("应用实例创建完成")
     return app
+
+if __name__ == '__main__':
+    app = create_app()
+    app.run(debug=True)

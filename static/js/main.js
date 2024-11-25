@@ -1,234 +1,187 @@
-window.app = {
-    setupThemeToggle() {
-        const darkModeToggle = document.getElementById('dark-mode-toggle');
-        const html = document.documentElement;
+// 应用主程序对象
+const app = {
+    init() {
+        console.log('Initializing app...');
+        this.setupThemeToggle();
+        this.setupUrlSection();
+        this.setupWebSocket();
         
-        // 检查本地存储中的主题设置
-        const savedTheme = localStorage.getItem('theme');
-        if (savedTheme === 'dark' || (!savedTheme && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
-            html.classList.add('dark');
+        // 显示URL部分
+        const urlSection = document.getElementById('urlSection');
+        if (urlSection) {
+            urlSection.style.display = 'block';
         }
+    },
 
-        // 监听系统主题变化
-        window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', e => {
-            if (!localStorage.getItem('theme')) {
-                if (e.matches) {
-                    html.classList.add('dark');
-                } else {
-                    html.classList.remove('dark');
-                }
-            }
-        });
+    setupThemeToggle() {
+        console.log('Setting up theme toggle...');
+        const themeToggle = document.getElementById('themeToggle');
+        if (themeToggle) {
+            // 从localStorage获取主题设置
+            const currentTheme = localStorage.getItem('theme') || 'light';
+            document.documentElement.setAttribute('data-theme', currentTheme);
+            themeToggle.checked = currentTheme === 'dark';
 
-        // 切换按钮点击事件
-        if (darkModeToggle) {
-            darkModeToggle.addEventListener('click', () => {
-                if (html.classList.contains('dark')) {
-                    html.classList.remove('dark');
-                    localStorage.setItem('theme', 'light');
-                } else {
-                    html.classList.add('dark');
-                    localStorage.setItem('theme', 'dark');
-                }
+            // 监听主题切换
+            themeToggle.addEventListener('change', () => {
+                const newTheme = themeToggle.checked ? 'dark' : 'light';
+                document.documentElement.setAttribute('data-theme', newTheme);
+                localStorage.setItem('theme', newTheme);
+                console.log('Theme switched to:', newTheme);
             });
         }
     },
 
-    async downloadFile(downloadUrl) {
-        try {
-            const response = await fetch(downloadUrl);
-            const blob = await response.blob();
-            const filename = response.headers.get('Content-Disposition')?.split('filename=')[1]?.replace(/"/g, '') || 'processed_markdown.md';
-            const url = window.URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = filename;
-            document.body.appendChild(a);
-            a.click();
-            window.URL.revokeObjectURL(url);
-            document.body.removeChild(a);
-        } catch (error) {
-            console.error('Download error:', error);
-            this.showError('下载文件失败');
+    setupUrlSection() {
+        console.log('Setting up URL section...');
+        const urlForm = document.getElementById('urlForm');
+        const urlInput = document.getElementById('urlInput');
+        const convertBtn = document.getElementById('convertUrlBtn');
+
+        if (urlForm && convertBtn) {
+            urlForm.onsubmit = (e) => {
+                e.preventDefault();
+            };
+
+            convertBtn.onclick = async () => {
+                const url = urlInput.value.trim();
+                if (!url) {
+                    this.showError('请输入URL');
+                    return;
+                }
+
+                try {
+                    this.showLoading('正在处理URL...');
+                    
+                    const response = await fetch('/api/process-url', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({ url })
+                    });
+
+                    const data = await response.json();
+                    console.log('URL processing response:', data);
+
+                    if (!response.ok) {
+                        throw new Error(data.error || '处理URL时出错');
+                    }
+
+                    if (data.error) {
+                        throw new Error(data.error);
+                    }
+
+                    if (data.download_url) {
+                        this.showSuccess('URL处理成功!', `成功处理 ${data.successful_downloads || 0}/${data.total_images || 0} 张图片`);
+                        this.createDownloadLink(data.download_url, data.processed_filename);
+                    } else {
+                        throw new Error('处理结果中没有下载链接');
+                    }
+
+                } catch (error) {
+                    console.error('Error processing URL:', error);
+                    this.showError(`处理URL失败: ${error.message}`);
+                } finally {
+                    this.hideLoading();
+                }
+            };
+        }
+    },
+
+    setupWebSocket() {
+        console.log('Setting up WebSocket...');
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        this.ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
+        
+        this.ws.onmessage = (event) => {
+            const data = JSON.parse(event.data);
+            if (data.type === 'progress') {
+                this.updateProgress(data);
+            }
+        };
+    },
+
+    showLoading(message = '处理中...') {
+        const progressContainer = document.getElementById('progressContainer');
+        const progressText = document.getElementById('progressText');
+        
+        if (progressContainer && progressText) {
+            progressContainer.style.display = 'block';
+            progressText.textContent = message;
+            
+            // 重置进度条
+            const progressBar = document.getElementById('progressBar');
+            if (progressBar) {
+                progressBar.style.width = '0%';
+                progressBar.setAttribute('aria-valuenow', 0);
+            }
+        }
+    },
+
+    hideLoading() {
+        const progressContainer = document.getElementById('progressContainer');
+        if (progressContainer) {
+            progressContainer.style.display = 'none';
+        }
+    },
+
+    updateProgress(data) {
+        const progressBar = document.getElementById('progressBar');
+        const progressText = document.getElementById('progressText');
+        const progressDetails = document.getElementById('progressDetails');
+
+        if (progressBar && progressText && progressDetails) {
+            const percent = Math.round(data.progress * 100);
+            progressBar.style.width = `${percent}%`;
+            progressBar.setAttribute('aria-valuenow', percent);
+            
+            progressText.textContent = data.message || '处理中...';
+            if (data.details) {
+                progressDetails.textContent = data.details;
+                progressDetails.style.display = 'block';
+            }
         }
     },
 
     showError(message) {
         Swal.fire({
+            icon: 'error',
             title: '错误',
             text: message,
-            icon: 'error',
             confirmButtonText: '确定'
         });
     },
 
-    showSuccess(message) {
+    showSuccess(title, message) {
         Swal.fire({
-            title: '成功',
-            text: message,
             icon: 'success',
+            title: title,
+            text: message,
             confirmButtonText: '确定'
         });
     },
 
-    setupDropZone() {
-        const dropZone = document.getElementById('drop-zone');
-        const fileInput = document.getElementById('file-input');
-
-        if (!dropZone || !fileInput) return;
-
-        // 处理拖放事件
-        ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
-            dropZone.addEventListener(eventName, (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-            });
-        });
-
-        // 拖放视觉反馈
-        ['dragenter', 'dragover'].forEach(eventName => {
-            dropZone.addEventListener(eventName, () => {
-                dropZone.classList.add('border-blue-500', 'bg-blue-50', 'dark:bg-blue-900/20');
-            });
-        });
-
-        ['dragleave', 'drop'].forEach(eventName => {
-            dropZone.addEventListener(eventName, () => {
-                dropZone.classList.remove('border-blue-500', 'bg-blue-50', 'dark:bg-blue-900/20');
-            });
-        });
-
-        // 处理文件拖放
-        dropZone.addEventListener('drop', (e) => {
-            const file = e.dataTransfer.files[0];
-            if (file) {
-                this.handleFile(file);
-            }
-        });
-
-        // 处理文件选择
-        fileInput.addEventListener('change', (e) => {
-            const file = e.target.files[0];
-            if (file) {
-                this.handleFile(file);
-            }
-        });
-
-        // 点击区域触发文件选择
-        dropZone.addEventListener('click', () => {
-            fileInput.click();
-        });
-    },
-
-    setupUrlSection() {
-        const urlInput = document.getElementById('url-input');
-        const urlSubmitBtn = document.getElementById('url-submit');
-        
-        if (urlSubmitBtn) {
-            urlSubmitBtn.addEventListener('click', () => {
-                const url = urlInput.value.trim();
-                if (url) {
-                    this.handleUrl(url);
-                } else {
-                    this.showError('请输入有效的URL');
-                }
-            });
+    createDownloadLink(downloadUrl, filename) {
+        const downloadContainer = document.getElementById('downloadContainer');
+        if (downloadContainer) {
+            downloadContainer.innerHTML = '';
+            
+            const link = document.createElement('a');
+            link.href = downloadUrl;
+            link.className = 'btn btn-success mt-3';
+            link.download = filename || 'processed.md';
+            link.innerHTML = '<i class="fas fa-download"></i> 下载处理后的文件';
+            
+            downloadContainer.appendChild(link);
+            downloadContainer.style.display = 'block';
         }
-    },
-
-    setupSwitchButtons() {
-        const mdFileBtn = document.getElementById('md-file-btn');
-        const urlBtn = document.getElementById('url-btn');
-        const mdFileSection = document.getElementById('md-file-section');
-        const urlSection = document.getElementById('url-section');
-
-        if (!mdFileBtn || !urlBtn || !mdFileSection || !urlSection) return;
-
-        mdFileBtn.addEventListener('click', () => {
-            mdFileSection.classList.remove('hidden');
-            urlSection.classList.add('hidden');
-            mdFileBtn.classList.add('bg-blue-600', 'text-white');
-            mdFileBtn.classList.remove('bg-gray-100', 'text-gray-700');
-            urlBtn.classList.remove('bg-blue-600', 'text-white');
-            urlBtn.classList.add('bg-gray-100', 'text-gray-700');
-        });
-
-        urlBtn.addEventListener('click', () => {
-            mdFileSection.classList.add('hidden');
-            urlSection.classList.remove('hidden');
-            urlBtn.classList.add('bg-blue-600', 'text-white');
-            urlBtn.classList.remove('bg-gray-100', 'text-gray-700');
-            mdFileBtn.classList.remove('bg-blue-600', 'text-white');
-            mdFileBtn.classList.add('bg-gray-100', 'text-gray-700');
-        });
-    },
-
-    async handleFile(file) {
-        if (!file.name.toLowerCase().endsWith('.md')) {
-            this.showError('请选择Markdown文件（.md）');
-            return;
-        }
-
-        const formData = new FormData();
-        formData.append('file', file);
-
-        try {
-            const response = await fetch('/upload', {
-                method: 'POST',
-                body: formData
-            });
-
-            if (response.ok) {
-                const result = await response.json();
-                if (result.download_url) {
-                    await this.downloadFile(result.download_url);
-                    this.showSuccess('文件处理成功！');
-                } else {
-                    this.showError('处理成功但未返回下载链接');
-                }
-            } else {
-                const error = await response.text();
-                this.showError(`上传失败: ${error}`);
-            }
-        } catch (error) {
-            console.error('Upload error:', error);
-            this.showError('文件上传失败');
-        }
-    },
-
-    async handleUrl(url) {
-        try {
-            const response = await fetch('/process_url', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({ url })
-            });
-
-            if (response.ok) {
-                const result = await response.json();
-                if (result.download_url) {
-                    await this.downloadFile(result.download_url);
-                    this.showSuccess('URL处理成功！');
-                } else {
-                    this.showError('处理成功但未返回下载链接');
-                }
-            } else {
-                const error = await response.text();
-                this.showError(`处理失败: ${error}`);
-            }
-        } catch (error) {
-            console.error('URL processing error:', error);
-            this.showError('URL处理失败');
-        }
-    },
-
-    init() {
-        console.log('App initialized');
-        this.setupThemeToggle();
-        this.setupDropZone();
-        this.setupUrlSection();
-        this.setupSwitchButtons();
     }
 };
+
+// 当DOM加载完成时初始化应用
+document.addEventListener('DOMContentLoaded', () => {
+    console.log('DOM loaded, initializing app...');
+    window.app = app;
+    app.init();
+});

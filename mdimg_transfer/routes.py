@@ -12,6 +12,11 @@ from urllib.parse import urljoin, urlparse
 import tempfile
 import aiohttp
 import time
+import uuid
+import asyncio
+import logging
+
+logger = logging.getLogger(__name__)
 
 api = Blueprint('api', __name__, url_prefix='/api')
 
@@ -100,60 +105,36 @@ async def convert_html():
 
 @api.route('/process-url', methods=['POST'])
 async def process_url():
+    """处理URL请求"""
     try:
         data = await request.get_json()
         url = data.get('url')
+        
         if not url:
-            return jsonify({'error': 'No URL provided'}), 400
-
-        # 创建临时目录用于处理文件
-        with tempfile.TemporaryDirectory() as temp_dir:
-            # 下载URL内容
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url) as response:
-                    if response.status != 200:
-                        return jsonify({'error': f'Failed to fetch URL: {response.status}'}), 400
-                    content = await response.text()
-
-            # 解析HTML并提取图片链接
-            soup = BeautifulSoup(content, 'html.parser')
-            images = soup.find_all('img')
+            return jsonify({'error': '请提供URL'}), 400
             
-            # 收集图片信息
-            image_data = []
-            for img in images:
-                src = img.get('src', '')
-                if src:
-                    if not src.startswith(('http://', 'https://')):
-                        # 处理相对URL
-                        src = urljoin(url, src)
-                    image_data.append({
-                        'original_url': src,
-                        'filename': os.path.basename(urlparse(src).path) or 'image.jpg'
-                    })
-
-            # 创建Markdown文件
-            md_content = f"# Images from {url}\n\n"
-            for img in image_data:
-                md_content += f"![{img['filename']}]({img['original_url']})\n\n"
-
-            # 保存处理后的文件
-            processed_filename = f"processed_{int(time.time())}.md"
-            output_path = os.path.join(current_app.config['UPLOAD_FOLDER'], processed_filename)
+        # 生成任务ID
+        task_id = str(uuid.uuid4())
+        
+        # 获取WebSocket连接
+        ws = request.environ.get('ws')
+        
+        # 创建进度回调
+        def progress_callback(data):
+            if ws:
+                asyncio.create_task(ws.send_json(data))
+                
+        # 处理URL
+        url_processor = UrlProcessor(current_app.config)
+        result = await url_processor.process_url(url, task_id, progress_callback)
+        
+        if 'error' in result:
+            return jsonify({'error': result['error']}), 400
             
-            async with aiofiles.open(output_path, 'w', encoding='utf-8') as f:
-                await f.write(md_content)
-
-            return jsonify({
-                'message': 'URL processed successfully',
-                'processed_filename': processed_filename,
-                'original_url': url,
-                'image_count': len(image_data),
-                'download_url': f"/api/download/{processed_filename}"
-            })
-
+        return jsonify(result)
+        
     except Exception as e:
-        current_app.logger.error(f"Error processing URL: {str(e)}")
+        logger.error(f"Error processing URL: {e}")
         return jsonify({'error': str(e)}), 500
 
 @api.route('/download/<filename>')
