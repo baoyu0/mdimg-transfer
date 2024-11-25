@@ -1,0 +1,13 @@
+name: mdimg-transfer
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - quart=0.18.4
+  - flask=2.2.5
+  - hypercorn=0.17.3
+  - werkzeug=2.2.3
+  - aiofiles
+  - python-multipart
+  - pip
