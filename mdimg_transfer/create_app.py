@@ -8,6 +8,7 @@ from logging.handlers import RotatingFileHandler
 from quart import Quart, send_from_directory, render_template
 from .config import config
 from .routes.api import bp as api
+from .routes.websocket import bp as websocket
 from .core.markdown_processor import MarkdownProcessor
 from .core.image_downloader import ImageDownloader
 from .core.r2_uploader import R2Uploader
@@ -86,6 +87,7 @@ def create_app():
     # 注册蓝图
     logger.debug("正在注册蓝图...")
     app.register_blueprint(api)
+    app.register_blueprint(websocket)
     
     @app.route('/')
     async def index():

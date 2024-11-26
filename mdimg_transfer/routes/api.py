@@ -12,7 +12,7 @@ from werkzeug.utils import secure_filename
 from ..services.file_processor import FileProcessor
 from ..services.url_processor import UrlProcessor
 from ..services.progress import ProgressManager
-from ..config import Config
+from ..config import Config, config
 
 logger = logging.getLogger(__name__)
 
@@ -102,7 +102,7 @@ async def process_url():
             )
         
         # 处理URL
-        processor = UrlProcessor(current_app.config)
+        processor = UrlProcessor(config)
         result = await processor.process_url(
             url=url,
             task_id=task_id,

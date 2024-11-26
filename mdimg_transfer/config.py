@@ -14,6 +14,7 @@ class Config:
     BUCKET_NAME: str = os.getenv('BUCKET_NAME', '')
     PUBLIC_URL: str = os.getenv('PUBLIC_URL', '')
     R2_ENDPOINT_URL: str = os.getenv('R2_ENDPOINT_URL', '')
+    R2_ENDPOINT: str = R2_ENDPOINT_URL  # 添加别名
     R2_ACCESS_KEY_ID: str = os.getenv('R2_ACCESS_KEY_ID', '')
     R2_SECRET_ACCESS_KEY: str = os.getenv('R2_SECRET_ACCESS_KEY', '')
     R2_BUCKET_NAME: str = os.getenv('R2_BUCKET_NAME', '')
@@ -25,6 +26,7 @@ class Config:
     PROCESSED_FOLDER: str = os.path.join(BASE_DIR, os.getenv('PROCESSED_FOLDER', 'processed'))
     IMAGE_FOLDER: str = os.path.join(BASE_DIR, os.getenv('IMAGE_FOLDER', 'images'))
     TEMP_DIR: str = os.path.join(BASE_DIR, os.getenv('TEMP_DIR', 'temp'))  # 添加临时目录配置
+    temp_dir: str = TEMP_DIR  # 添加小写别名
     
     # 应用配置
     MAX_FILE_SIZE: int = int(str(os.getenv('MAX_FILE_SIZE', 50 * 1024 * 1024)).strip())  # 默认50MB

@@ -7,6 +7,7 @@ import re
 import logging
 import aiohttp
 import asyncio
+from pathlib import Path
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse
 from typing import Dict, Any, Optional, List
@@ -103,7 +104,10 @@ class UrlProcessor:
             
             # 创建临时Markdown文件
             filename = f"{urlparse(url).netloc.replace('.', '_')}.md"
-            temp_file_path = self.config.temp_dir / filename
+            temp_file_path = Path(self.config.temp_dir) / filename
+            
+            # 确保临时目录存在
+            temp_file_path.parent.mkdir(parents=True, exist_ok=True)
             
             with temp_file_path.open('w', encoding='utf-8') as f:
                 f.write(markdown_content)

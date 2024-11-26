@@ -18,18 +18,22 @@
 - 上传图片到 Cloudflare R2 存储
 - 更新文件中的图片链接
 - 下载处理后的 Markdown 文件
+- WebSocket 实时进度显示
 
 ### 网页转换
 - 输入网页 URL 自动抓取内容
 - 将网页内容转换为 Markdown 格式
 - 自动处理网页中的图片
 - 生成包含新图片链接的 Markdown 文件
+- 实时转换进度反馈
 
 ### 用户界面特性
 - 简洁现代的界面设计
 - 深色/浅色主题切换（支持跟随系统）
 - 实时处理进度显示
 - 友好的状态反馈提示
+- 响应式布局设计
+- Tab 式任务切换
 
 ## 快速开始
 
@@ -51,11 +55,19 @@ git checkout dev
 ### 2. 配置环境变量
 创建 `.env` 文件并配置以下参数：
 ```env
+# 服务器配置
+PORT=5000
+DEBUG=True
+
+# R2 存储配置
 R2_ENDPOINT_URL=https://xxx.r2.cloudflarestorage.com
 R2_ACCESS_KEY_ID=your_access_key
 R2_SECRET_ACCESS_KEY=your_secret_key
 R2_BUCKET_NAME=your_bucket_name
 R2_PUBLIC_URL=https://pub-xxx.r2.dev
+
+# 日志配置
+LOG_LEVEL=DEBUG
 ```
 
 ### 3. 安装依赖
@@ -71,21 +83,45 @@ npm install
 ```bash
 # 构建 Tailwind CSS
 npm run build
+
+# 监听模式（开发时使用）
+npm run watch
 ```
 
-### 5. 启动服务器
+### 5. 服务器管理
+使用 `server_control.py` 来管理服务器：
+
 ```bash
-python start_server.py
+# 启动服务器
+python server_control.py start
+
+# 停止服务器
+python server_control.py stop
+
+# 重启服务器
+python server_control.py restart
 ```
 
-服务器将在 http://localhost:5000 启动
+服务器将在配置的端口上启动（默认 http://localhost:5000）
 
 ## 开发指南
 
-### 分支策略
-- `main`: 主分支，只接受来自 dev 分支的合并请求
-- `dev`: 开发分支，所有开发工作在此分支进行
-- 功能分支：从 dev 分支创建，完成后合并回 dev
+### 项目结构
+```
+mdimg-transfer/
+├── mdimg_transfer/        # 主应用程序包
+│   ├── services/         # 服务层
+│   ├── utils/           # 工具函数
+│   └── app.py           # 应用程序入口
+├── static/              # 静态资源
+│   ├── css/            # 样式文件
+│   └── js/             # JavaScript 文件
+├── templates/           # HTML 模板
+├── logs/               # 日志文件
+├── uploads/            # 上传文件临时目录
+├── processed/          # 处理后的文件
+└── images/             # 下载的图片缓存
+```
 
 ### 开发流程
 1. 确保在 dev 分支上进行开发：
@@ -99,69 +135,36 @@ python start_server.py
    git checkout -b feature/your-feature-name
    ```
 
-3. 提交更改：
+3. 启动开发环境：
    ```bash
-   git add .
-   git commit -m "feat: your changes"
-   git push
+   # 终端 1：启动 Tailwind CSS 监听
+   npm run watch
+
+   # 终端 2：启动服务器（自动重载模式）
+   python server_control.py start
    ```
 
-4. 合并到主分支：
-   - 通过 GitHub 创建 Pull Request 从 dev 合并到 main
-   - 等待代码审查
-   - 合并后删除功能分支
-
-### 代码风格
-- Python: 遵循 PEP 8 规范
-- JavaScript: 使用 ES6+ 特性
-- HTML/CSS: 使用 Tailwind CSS 工具类
+### 调试提示
+- 检查 `logs` 目录下的日志文件以获取详细信息
+- 使用浏览器开发者工具查看 WebSocket 连接状态
+- 服务器问题优先使用 `server_control.py stop` 清理进程
 
 ## 技术栈
 
 ### 后端
-- Python 3.10
-- Quart (异步 Web 框架)
-- Hypercorn (ASGI 服务器)
-- python-dotenv (环境变量管理)
-- boto3 (AWS S3/R2 SDK)
+- Quart: 异步 Python Web 框架
+- Hypercorn: ASGI 服务器
+- aiohttp: 异步 HTTP 客户端
+- boto3: AWS/R2 SDK
+- python-dotenv: 环境变量管理
+- psutil: 进程管理
 
 ### 前端
-- 原生 JavaScript
+- Vanilla JavaScript
 - Tailwind CSS
-- SweetAlert2 (通知提示)
-
-### 存储
-- Cloudflare R2 (兼容 S3 API)
-
-## 项目结构
-
-```
-mdimg-transfer/
-├── static/               # 静态资源
-│   ├── css/             # 样式文件
-│   │   └── output.css   # 编译后的 Tailwind CSS
-│   └── js/              # JavaScript 文件
-│       └── main.js      # 主要的前端逻辑
-├── templates/           # HTML 模板
-│   └── index.html      # 主页面模板
-├── mdimg_transfer/     # 后端 Python 包
-│   ├── core/          # 核心功能模块
-│   ├── routes/        # API 路由
-│   └── errors/        # 错误处理
-├── start_server.py     # 服务器启动脚本
-├── requirements.txt    # Python 依赖
-├── package.json       # Node.js 依赖
-└── .env              # 环境变量配置
-```
-
-## 贡献
-
-欢迎提交 Issues 和 Pull Requests 来帮助改进项目。请确保：
-1. Pull Request 提交到 dev 分支
-2. 提交信息遵循约定式提交规范
-3. 更新相关文档
-4. 添加必要的测试
+- SweetAlert2
+- WebSocket API
 
 ## 许可证
 
-本项目采用 MIT 许可证。
+本项目采用 MIT 许可证

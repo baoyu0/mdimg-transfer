@@ -3,145 +3,276 @@ const app = {
     init() {
         console.log('Initializing app...');
         this.setupThemeToggle();
+        this.setupTabs();
+        this.setupFileUpload();
         this.setupUrlSection();
         this.setupWebSocket();
-        
-        // 显示URL部分
-        const urlSection = document.getElementById('urlSection');
-        if (urlSection) {
-            urlSection.style.display = 'block';
-        }
     },
 
     setupThemeToggle() {
         console.log('Setting up theme toggle...');
-        const themeToggle = document.getElementById('themeToggle');
-        if (themeToggle) {
-            // 从localStorage获取主题设置
-            const currentTheme = localStorage.getItem('theme') || 'light';
-            document.documentElement.setAttribute('data-theme', currentTheme);
-            themeToggle.checked = currentTheme === 'dark';
+        const darkModeToggle = document.getElementById('dark-mode-toggle');
+        const html = document.documentElement;
 
-            // 监听主题切换
-            themeToggle.addEventListener('change', () => {
-                const newTheme = themeToggle.checked ? 'dark' : 'light';
-                document.documentElement.setAttribute('data-theme', newTheme);
-                localStorage.setItem('theme', newTheme);
-                console.log('Theme switched to:', newTheme);
-            });
+        // 检查系统主题
+        if (window.matchMedia('(prefers-color-scheme: dark)').matches) {
+            html.classList.add('dark');
         }
+
+        // 检查本地存储的主题设置
+        const savedTheme = localStorage.getItem('theme');
+        if (savedTheme) {
+            if (savedTheme === 'dark') {
+                html.classList.add('dark');
+            } else {
+                html.classList.remove('dark');
+            }
+        }
+
+        darkModeToggle.addEventListener('click', () => {
+            html.classList.toggle('dark');
+            localStorage.setItem('theme', html.classList.contains('dark') ? 'dark' : 'light');
+        });
     },
 
     setupUrlSection() {
         console.log('Setting up URL section...');
-        const urlForm = document.getElementById('urlForm');
         const urlInput = document.getElementById('urlInput');
-        const convertBtn = document.getElementById('convertUrlBtn');
+        const convertBtn = document.getElementById('convertBtn');
+        const convertBtnText = document.getElementById('convertBtnText');
+        const convertBtnSpinner = document.getElementById('convertBtnSpinner');
 
-        if (urlForm && convertBtn) {
-            urlForm.onsubmit = (e) => {
-                e.preventDefault();
-            };
-
-            convertBtn.onclick = async () => {
-                const url = urlInput.value.trim();
-                if (!url) {
-                    this.showError('请输入URL');
-                    return;
-                }
-
-                try {
-                    this.showLoading('正在处理URL...');
-                    
-                    const response = await fetch('/api/process-url', {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json'
-                        },
-                        body: JSON.stringify({ url })
-                    });
-
-                    const data = await response.json();
-                    console.log('URL processing response:', data);
-
-                    if (!response.ok) {
-                        throw new Error(data.error || '处理URL时出错');
-                    }
-
-                    if (data.error) {
-                        throw new Error(data.error);
-                    }
-
-                    if (data.download_url) {
-                        this.showSuccess('URL处理成功!', `成功处理 ${data.successful_downloads || 0}/${data.total_images || 0} 张图片`);
-                        this.createDownloadLink(data.download_url, data.processed_filename);
-                    } else {
-                        throw new Error('处理结果中没有下载链接');
-                    }
-
-                } catch (error) {
-                    console.error('Error processing URL:', error);
-                    this.showError(`处理URL失败: ${error.message}`);
-                } finally {
-                    this.hideLoading();
-                }
-            };
+        if (!urlInput || !convertBtn || !convertBtnText || !convertBtnSpinner) {
+            console.error('URL section elements not found');
+            return;
         }
+
+        convertBtn.addEventListener('click', async () => {
+            const url = urlInput.value.trim();
+            if (!url) {
+                Swal.fire({
+                    icon: 'error',
+                    title: '错误',
+                    text: '请输入要转换的URL'
+                });
+                return;
+            }
+
+            // Show loading state
+            convertBtn.disabled = true;
+            convertBtnText.classList.add('hidden');
+            convertBtnSpinner.classList.remove('hidden');
+
+            try {
+                const response = await fetch('/api/convert', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ url })
+                });
+
+                if (!response.ok) {
+                    throw new Error('URL转换失败');
+                }
+
+                const result = await response.json();
+                
+                Swal.fire({
+                    icon: 'success',
+                    title: '转换成功',
+                    text: '文件已成功转换'
+                });
+
+                if (result.downloadUrl) {
+                    this.createDownloadLink(result.downloadUrl, 'converted.md');
+                }
+            } catch (error) {
+                Swal.fire({
+                    icon: 'error',
+                    title: '转换失败',
+                    text: error.message
+                });
+            } finally {
+                convertBtn.disabled = false;
+                convertBtnText.classList.remove('hidden');
+                convertBtnSpinner.classList.add('hidden');
+            }
+        });
     },
 
     setupWebSocket() {
         console.log('Setting up WebSocket...');
-        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        this.ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
-        
-        this.ws.onmessage = (event) => {
+        function generateClientId() {
+            return Math.random().toString(36).substring(2, 11);
+        }
+        const clientId = generateClientId();
+        const ws = new WebSocket(`ws://${window.location.host}/ws/${clientId}`);
+
+        ws.onmessage = (event) => {
             const data = JSON.parse(event.data);
+            console.log('WebSocket message:', data);
+
+            // 更新进度条
             if (data.type === 'progress') {
-                this.updateProgress(data);
+                this.updateProgress(data.progress);
             }
+        };
+
+        ws.onerror = (error) => {
+            console.error('WebSocket error:', error);
+        };
+
+        ws.onclose = () => {
+            console.log('WebSocket connection closed');
         };
     },
 
-    showLoading(message = '处理中...') {
-        const progressContainer = document.getElementById('progressContainer');
-        const progressText = document.getElementById('progressText');
-        
-        if (progressContainer && progressText) {
-            progressContainer.style.display = 'block';
-            progressText.textContent = message;
+    updateProgress(progress) {
+        const progressBar = document.getElementById('progress-bar');
+        const progressText = document.getElementById('progress-text');
+        const uploadProgress = document.getElementById('upload-progress');
+
+        if (progress.total > 0) {
+            uploadProgress.classList.remove('hidden');
+            const percentage = Math.round((progress.current / progress.total) * 100);
+            progressBar.style.width = `${percentage}%`;
+            progressText.textContent = `${percentage}%`;
+        }
+    },
+
+    setupFileUpload() {
+        console.log('Setting up file upload...');
+        const dropZone = document.getElementById('drop-zone');
+        const fileInput = document.getElementById('file-upload');
+        const progressBar = document.getElementById('progress-bar');
+        const progressText = document.getElementById('progress-text');
+        const uploadProgress = document.getElementById('upload-progress');
+
+        // Check if required elements exist
+        if (!dropZone || !fileInput) {
+            console.error('File upload elements not found');
+            return;
+        }
+
+        // Handle file drag and drop
+        dropZone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            dropZone.classList.add('border-blue-500', 'dark:border-blue-400');
+        });
+
+        dropZone.addEventListener('dragleave', () => {
+            dropZone.classList.remove('border-blue-500', 'dark:border-blue-400');
+        });
+
+        dropZone.addEventListener('drop', async (e) => {
+            e.preventDefault();
+            dropZone.classList.remove('border-blue-500', 'dark:border-blue-400');
             
-            // 重置进度条
-            const progressBar = document.getElementById('progressBar');
-            if (progressBar) {
-                progressBar.style.width = '0%';
-                progressBar.setAttribute('aria-valuenow', 0);
+            const files = e.dataTransfer.files;
+            if (files.length > 0) {
+                await this.handleFileUpload(files[0]);
+            }
+        });
+
+        // Handle file selection
+        fileInput.addEventListener('change', async () => {
+            if (fileInput.files.length > 0) {
+                await this.handleFileUpload(fileInput.files[0]);
+            }
+        });
+
+        // Store progress elements for later use
+        this.progressElements = {
+            progressBar,
+            progressText,
+            uploadProgress
+        };
+
+        // Handle file upload
+        this.handleFileUpload = async (file) => {
+            if (!file.name.toLowerCase().endsWith('.md') && !file.name.toLowerCase().endsWith('.markdown')) {
+                Swal.fire({
+                    icon: 'error',
+                    title: '文件类型错误',
+                    text: '请选择 .md 或 .markdown 文件'
+                });
+                return;
+            }
+
+            const formData = new FormData();
+            formData.append('file', file);
+
+            this.progressElements.uploadProgress.classList.remove('hidden');
+            
+            try {
+                const response = await fetch('/api/upload', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                const data = await response.json();
+                
+                if (data.error) {
+                    throw new Error(data.error);
+                }
+
+                // 显示成功消息
+                Swal.fire({
+                    icon: 'success',
+                    title: '上传成功',
+                    text: `已成功处理 ${data.successful_downloads} 张图片`,
+                    footer: `<a href="${data.download_url}" class="text-blue-500 hover:text-blue-600">点击下载处理后的文件</a>`
+                });
+
+            } catch (error) {
+                console.error('Error uploading file:', error);
+                Swal.fire({
+                    icon: 'error',
+                    title: '上传失败',
+                    text: error.message
+                });
+            } finally {
+                this.progressElements.uploadProgress.classList.add('hidden');
+                this.progressElements.progressBar.style.width = '0%';
+                this.progressElements.progressText.textContent = '0%';
             }
         }
     },
 
-    hideLoading() {
-        const progressContainer = document.getElementById('progressContainer');
-        if (progressContainer) {
-            progressContainer.style.display = 'none';
-        }
-    },
+    setupTabs() {
+        console.log('Setting up tabs...');
+        const fileTabBtn = document.getElementById('fileTabBtn');
+        const urlTabBtn = document.getElementById('urlTabBtn');
+        const fileSection = document.getElementById('md-file-section');
+        const urlSection = document.getElementById('urlSection');
 
-    updateProgress(data) {
-        const progressBar = document.getElementById('progressBar');
-        const progressText = document.getElementById('progressText');
-        const progressDetails = document.getElementById('progressDetails');
-
-        if (progressBar && progressText && progressDetails) {
-            const percent = Math.round(data.progress * 100);
-            progressBar.style.width = `${percent}%`;
-            progressBar.setAttribute('aria-valuenow', percent);
-            
-            progressText.textContent = data.message || '处理中...';
-            if (data.details) {
-                progressDetails.textContent = data.details;
-                progressDetails.style.display = 'block';
-            }
+        // Check if all required elements exist
+        if (!fileTabBtn || !urlTabBtn || !fileSection || !urlSection) {
+            console.error('Tab elements not found');
+            return;
         }
+
+        // Set initial state
+        fileTabBtn.classList.add('active');
+        urlTabBtn.classList.remove('active');
+        fileSection.classList.remove('hidden');
+        urlSection.classList.add('hidden');
+
+        // Add click handlers
+        fileTabBtn.addEventListener('click', () => {
+            fileTabBtn.classList.add('active');
+            urlTabBtn.classList.remove('active');
+            fileSection.classList.remove('hidden');
+            urlSection.classList.add('hidden');
+        });
+
+        urlTabBtn.addEventListener('click', () => {
+            urlTabBtn.classList.add('active');
+            fileTabBtn.classList.remove('active');
+            urlSection.classList.remove('hidden');
+            fileSection.classList.add('hidden');
+        });
     },
 
     showError(message) {

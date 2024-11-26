@@ -8,6 +8,7 @@ import os
 import re
 import json
 import aiohttp
+import aiofiles
 import asyncio
 import logging
 import hashlib
@@ -142,11 +143,24 @@ class FileProcessor:
     async def _process_image_task(self, session: aiohttp.ClientSession, task: ImageTask,
                                semaphore: asyncio.Semaphore) -> Optional[str]:
         """处理单个图片任务"""
-        while task.retries <= task.max_retries:
+        while True:
             try:
                 async with semaphore:
-                    if await self._download_image(session, task):
-                        return await self._upload_to_r2(task)
+                    # 下载图片
+                    if task.status == 'pending' or task.status == 'error':
+                        task.status = 'downloading'
+                        if not await self._download_image(session, task):
+                            task.status = 'error'
+                            break
+                    
+                    # 上传到R2
+                    if task.status == 'downloading':
+                        task.status = 'uploading'
+                        if not await self._upload_to_r2(task):
+                            task.status = 'error'
+                            break
+                        task.status = 'completed'
+                        return task
                     
                 if task.retries < task.max_retries:
                     task.retries += 1
@@ -164,121 +178,101 @@ class FileProcessor:
                 
         return None
 
-async def process_markdown_file(file: FileStorage, task_id: str,
-                              progress_callback: Callable = None,
-                              max_concurrent: int = 5) -> Dict[str, Any]:
-    """处理Markdown文件，下载图片并上传到R2"""
-    processor = FileProcessor(Config())
-    
-    try:
-        # 读取文件内容
-        content = file.read().decode('utf-8')
-        file.seek(0)
-        
-        # 从之前的状态恢复
-        saved_content, saved_tasks = processor._load_state(task_id)
-        if saved_content and saved_tasks:
-            content = saved_content
-            image_tasks = saved_tasks
-            logger.info(f"Restored state for task {task_id}")
-        else:
-            # 查找所有图片链接并创建任务
-            image_urls = re.findall(r'!\[.*?\]\((.*?)\)', content)
-            image_tasks = []
-            for i, url in enumerate(image_urls, 1):
-                ext = url.split('.')[-1].lower()
-                if ext not in ['jpg', 'jpeg', 'png', 'gif', 'webp']:
-                    ext = 'jpg'
-                local_filename = f'image_{i}.{ext}'
-                r2_key = f'images/{task_id}/{local_filename}'
-                image_tasks.append(ImageTask(
-                    url=url,
-                    index=i,
-                    local_filename=local_filename,
-                    r2_key=r2_key
-                ))
-        
-        total_images = len(image_tasks)
-        if not total_images:
+    async def process_markdown_file(self, file: FileStorage, task_id: str,
+                                progress_callback: Callable = None,
+                                max_concurrent: int = 5) -> Dict[str, Any]:
+        """处理Markdown文件，下载图片并上传到R2"""
+        try:
+            # 读取文件内容
+            content = file.read().decode('utf-8')
+            file.seek(0)
+            
+            # 从之前的状态恢复
+            saved_content, saved_tasks = self._load_state(task_id)
+            if saved_content and saved_tasks:
+                content = saved_content
+                image_tasks = saved_tasks
+                logger.info(f"Restored state for task {task_id}")
+            else:
+                # 查找所有图片链接并创建任务
+                image_urls = re.findall(r'!\[.*?\]\((.*?)\)', content)
+                image_tasks = []
+                for i, url in enumerate(image_urls, 1):
+                    ext = url.split('.')[-1].lower()
+                    if ext not in ['jpg', 'jpeg', 'png', 'gif', 'webp']:
+                        ext = 'jpg'
+                    local_filename = f'image_{i}.{ext}'
+                    r2_key = f'images/{task_id}/{local_filename}'
+                    image_tasks.append(ImageTask(
+                        url=url,
+                        index=i,
+                        local_filename=local_filename,
+                        r2_key=r2_key
+                    ))
+            
+            total_images = len(image_tasks)
+            if total_images == 0:
+                return {
+                    'download_url': None,
+                    'total_images': 0,
+                    'successful_downloads': 0
+                }
+            
+            # 创建信号量限制并发下载
+            semaphore = asyncio.Semaphore(max_concurrent)
+            
+            # 更新初始进度
+            if progress_callback:
+                progress_callback({
+                    'message': f'开始处理 {total_images} 张图片...',
+                    'progress': 0,
+                    'details': {
+                        'total': total_images,
+                        'current': 0,
+                        'success': 0,
+                        'failed': 0
+                    }
+                })
+            
+            # 保存初始状态
+            self._save_state(task_id, content, image_tasks)
+            
+            # 创建HTTP会话
+            async with aiohttp.ClientSession() as session:
+                # 并发处理所有图片
+                tasks = [
+                    self._process_image_task(session, task, semaphore)
+                    for task in image_tasks
+                ]
+                completed_tasks = await asyncio.gather(*tasks)
+            
+            # 统计处理结果
+            successful = [task for task in completed_tasks if task and task.status == 'completed']
+            successful_count = len(successful)
+            
+            # 替换图片链接
+            for task in successful:
+                old_link = f'({task.url})'
+                new_link = f'({self.config.R2_PUBLIC_URL}/{task.r2_key})'
+                content = content.replace(old_link, new_link)
+            
+            # 保存处理后的文件
+            output_filename = f'{task_id}.md'
+            output_path = self.processed_dir / output_filename
+            async with aiofiles.open(output_path, 'w', encoding='utf-8') as f:
+                await f.write(content)
+            
+            # 清理状态文件
+            state_file = self._create_state_file(task_id)
+            if state_file.exists():
+                state_file.unlink()
+            
             return {
-                'error': 'No images found in the markdown file'
+                'download_url': f'/download/{output_filename}',
+                'total_images': total_images,
+                'successful_downloads': successful_count
             }
             
-        if progress_callback:
-            progress_callback({
-                'message': f'找到 {total_images} 个图片链接',
-                'progress': 0,
-                'details': {
-                    'total_images': total_images,
-                    'processedImages': 0
-                }
-            })
-            
-        # 创建信号量控制并发
-        semaphore = asyncio.Semaphore(max_concurrent)
-        
-        # 并发处理所有图片
-        async with aiohttp.ClientSession() as session:
-            tasks = []
-            for image_task in image_tasks:
-                if image_task.status != 'completed':
-                    task = asyncio.create_task(
-                        processor._process_image_task(session, image_task, semaphore)
-                    )
-                    tasks.append((image_task, task))
-                    
-            # 处理所有任务并更新进度
-            completed = 0
-            for image_task, task in tasks:
-                try:
-                    r2_url = await task
-                    if r2_url:
-                        content = content.replace(image_task.url, r2_url)
-                        completed += 1
-                    
-                    if progress_callback:
-                        progress_callback({
-                            'message': f'处理第 {image_task.index}/{total_images} 个图片',
-                            'progress': int(completed / total_images * 100),
-                            'details': {
-                                'currentFile': image_task.url,
-                                'processedImages': completed,
-                                'totalImages': total_images,
-                                'errors': [t.error for t in image_tasks if t.error]
-                            }
-                        })
-                        
-                except Exception as e:
-                    logger.error(f"Task error: {e}")
-                    
-                # 定期保存状态
-                if completed % 5 == 0:
-                    processor._save_state(task_id, content, image_tasks)
-        
-        # 保存最终结果
-        output_filename = f'processed_{os.path.basename(file.filename)}'
-        output_path = processor.processed_dir / output_filename
-        with output_path.open('w', encoding='utf-8') as f:
-            f.write(content)
-            
-        if progress_callback:
-            progress_callback({
-                'message': '文件处理完成',
-                'progress': 100,
-                'details': {
-                    'total_images': total_images,
-                    'processedImages': completed,
-                    'errors': [t.error for t in image_tasks if t.error]
-                }
-            })
-            
-        return {
-            'download_url': f'/download/{output_filename}',
-            'total_images': total_images,
-            'successful_downloads': completed,
-            'errors': [t.error for t in image_tasks if t.error]
-        }
-        
-    except Exception as e:
-        logger.error(f"Error processing file: {e}")
-        return {'error': str(e)}
+        except Exception as e:
+            logger.error(f"Error processing markdown file: {e}")
+            raise
